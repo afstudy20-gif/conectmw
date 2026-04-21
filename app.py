@@ -104,7 +104,7 @@ class LoginBody(BaseModel):
 
 
 class ProfileIn(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=64)
     host: str = Field(min_length=1)
     port: int = 445
     username: str = Field(min_length=1)
@@ -248,21 +248,33 @@ def list_profiles() -> list[dict]:
     return [_profile_row_to_dict(r) for r in rows]
 
 
+def _unique_name(base: str) -> str:
+    with db() as c:
+        existing = {r["name"] for r in c.execute("SELECT name FROM profiles").fetchall()}
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base} ({i})" in existing:
+        i += 1
+    return f"{base} ({i})"
+
+
 @app.post("/profiles", dependencies=[Depends(require_session)])
 def create_profile(p: ProfileIn) -> dict:
     enc = FERNET.encrypt(p.password.encode())
+    name = p.name.strip() or _unique_name(f"{p.username}@{p.host}")
     try:
         with db() as c:
             cur = c.execute(
                 """INSERT INTO profiles(name,host,port,username,password_enc,share,domain,direct_tcp,port_fallback,client_name,server_name)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (p.name, p.host, p.port, p.username, enc, p.share, p.domain,
+                (name, p.host, p.port, p.username, enc, p.share, p.domain,
                  int(p.direct_tcp), int(p.port_fallback), p.client_name, p.server_name),
             )
             pid = cur.lastrowid
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="name exists")
-    return {"id": pid}
+    return {"id": pid, "name": name}
 
 
 @app.put("/profiles/{pid}", dependencies=[Depends(require_session)])
@@ -443,7 +455,7 @@ async function renderProfileForm(id){
   let p={name:"",host:"",port:445,username:"",password:"",share:"",domain:"",direct_tcp:true,port_fallback:true,client_name:"conectmw",server_name:"smb-server"};
   if(id){const all=await api("/profiles");const f=all.find(x=>x.id===id);if(f){Object.assign(p,f);p.password=""}}
   app.innerHTML=`<div class="card"><h2 style="margin-top:0">${id?"Edit":"New"} connection</h2>
-    <label>Name<input id="f_name" value="${esc(p.name)}"/></label>
+    <label>Name <span style="color:var(--mut)">(optional)</span><input id="f_name" placeholder="auto: user@host" value="${esc(p.name)}"/></label>
     <label>Host / IP<input id="f_host" placeholder="192.168.1.15" value="${esc(p.host)}"/></label>
     <div class="row"><label>Port<input id="f_port" type="number" value="${p.port}"/></label><label>Share<input id="f_share" placeholder="SharedFolder" value="${esc(p.share)}"/></label></div>
     <label>Username<input id="f_user" value="${esc(p.username)}" autocomplete="off"/></label>
