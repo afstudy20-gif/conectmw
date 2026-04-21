@@ -1,0 +1,29 @@
+services:
+  conectmw:
+    build: .
+    image: conectmw:latest
+    container_name: conectmw
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      PORT: 8000
+      SMB_USER: ${SMB_USER}
+      SMB_PASS: ${SMB_PASS}
+      SMB_CLIENT: ${SMB_CLIENT:-coolify-client}
+      SMB_SERVER: ${SMB_SERVER:-smb-server}
+      SMB_IP: ${SMB_IP}
+      SMB_PORT: ${SMB_PORT:-445}
+      SMB_SHARE: ${SMB_SHARE}
+      SMB_DOMAIN: ${SMB_DOMAIN:-}
+      SMB_USE_NTLM_V2: ${SMB_USE_NTLM_V2:-true}
+      SMB_DIRECT_TCP: ${SMB_DIRECT_TCP:-true}
+      SMB_PORT_FALLBACK: ${SMB_PORT_FALLBACK:-true}
+      SMB_CONNECT_TIMEOUT: ${SMB_CONNECT_TIMEOUT:-10}
+      API_KEY: ${API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
