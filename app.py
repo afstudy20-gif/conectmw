@@ -109,7 +109,7 @@ class ProfileIn(BaseModel):
     port: int = 445
     username: str = Field(min_length=1)
     password: str = Field(min_length=1)
-    share: str = Field(min_length=1)
+    share: str = ""
     domain: str = ""
     direct_tcp: bool = True
     port_fallback: bool = True
@@ -314,7 +314,10 @@ def test_profile(pid: int) -> dict:
 @app.get("/fs/list", dependencies=[Depends(require_session)])
 def fs_list(profile_id: int, path: str = "/", share: str | None = Query(default=None)) -> list[dict]:
     with smb_conn(profile_id) as (c, p):
-        items = c.listPath(share or p["share"], path)
+        tgt = share or p["share"]
+        if not tgt:
+            raise HTTPException(status_code=400, detail="share required")
+        items = c.listPath(tgt, path)
     return [
         {"name": i.filename, "is_dir": i.isDirectory, "size": i.file_size, "mtime": i.last_write_time}
         for i in items if i.filename not in (".", "..")
@@ -413,8 +416,10 @@ window.addEventListener("hashchange",route);
 function route(){
   const h=location.hash.slice(1);
   if(!h||h==="/"){return renderProfiles()}
-  const m=h.match(/^\\/p\\/(\\d+)(?:\\/(.*))?$/);
-  if(m){return renderBrowser(Number(m[1]),"/"+(m[2]||""))}
+  const ms=h.match(/^\\/p\\/(\\d+)\\/s\\/([^\\/]+)(?:\\/(.*))?$/);
+  if(ms){return renderBrowser(Number(ms[1]),decodeURIComponent(ms[2]),"/"+(ms[3]||""))}
+  const m=h.match(/^\\/p\\/(\\d+)$/);
+  if(m){return renderShares(Number(m[1]))}
   if(h==="/new"){return renderProfileForm()}
   const em=h.match(/^\\/edit\\/(\\d+)$/);
   if(em){return renderProfileForm(Number(em[1]))}
@@ -457,7 +462,7 @@ async function renderProfileForm(id){
   app.innerHTML=`<div class="card"><h2 style="margin-top:0">${id?"Edit":"New"} connection</h2>
     <label>Name <span style="color:var(--mut)">(optional)</span><input id="f_name" placeholder="auto: user@host" value="${esc(p.name)}"/></label>
     <label>Host / IP<input id="f_host" placeholder="192.168.1.15" value="${esc(p.host)}"/></label>
-    <div class="row"><label>Port<input id="f_port" type="number" value="${p.port}"/></label><label>Share<input id="f_share" placeholder="SharedFolder" value="${esc(p.share)}"/></label></div>
+    <div class="row"><label>Port<input id="f_port" type="number" value="${p.port}"/></label><label>Share <span style="color:var(--mut)">(optional)</span><input id="f_share" placeholder="blank = discover" value="${esc(p.share)}"/></label></div>
     <label>Username<input id="f_user" value="${esc(p.username)}" autocomplete="off"/></label>
     <label>Password${id?" <span style=\\"color:var(--mut)\\">(leave blank to keep)</span>":""}<input id="f_pass" type="password" autocomplete="new-password"/></label>
     <label>Domain (optional)<input id="f_domain" value="${esc(p.domain)}"/></label>
@@ -487,18 +492,31 @@ async function renderProfileForm(id){
     }catch(e){const el=document.getElementById("formErr");el.textContent=e.message;el.classList.remove("hide")}
   };
 }
-async function renderBrowser(pid,path){
+async function renderShares(pid){
+  app.innerHTML='<div class="empty">Discovering shares…</div>';
+  try{
+    const profs=await api("/profiles");
+    const p=profs.find(x=>x.id===pid);
+    if(p&&p.share){return renderBrowser(pid,p.share,"/")}
+    const shares=await api(`/fs/shares?profile_id=${pid}`);
+    if(!shares.length){app.innerHTML='<div class="empty">No shares found</div><div class="actions"><button class="sec" onclick="location.hash=\\'\\'">← Profiles</button></div>';return}
+    const list=shares.map(s=>`<li><span class="icon">📂</span><a class="n" href="#/p/${pid}/s/${encodeURIComponent(s.name)}">${esc(s.name)}</a>${s.comments?`<span class="s">${esc(s.comments)}</span>`:""}</li>`).join("");
+    app.innerHTML=`<div class="crumbs">${esc(p?.name||"")}</div><ul class="ls">${list}</ul><div class="actions"><button class="sec" onclick="location.hash=''">← Profiles</button></div>`;
+  }catch(e){app.innerHTML=`<div class="err">${esc(e.message)}</div><div class="actions"><button class="sec" onclick="location.hash=''">← Profiles</button></div>`}
+}
+async function renderBrowser(pid,share,path){
   app.innerHTML='<div class="empty">Loading…</div>';
   const parts=path.split("/").filter(Boolean);let acc="";
-  const crumbs=[`<a href="#/p/${pid}">root</a>`];
-  for(const s of parts){acc+="/"+s;crumbs.push(`<a href="#/p/${pid}${acc}">${esc(s)}</a>`)}
+  const base=`#/p/${pid}/s/${encodeURIComponent(share)}`;
+  const crumbs=[`<a href="#/p/${pid}">shares</a>`,`<a href="${base}">${esc(share)}</a>`];
+  for(const s of parts){acc+="/"+s;crumbs.push(`<a href="${base}${acc}">${esc(s)}</a>`)}
   try{
-    const items=await api(`/fs/list?profile_id=${pid}&path=${encodeURIComponent(path)}`);
+    const items=await api(`/fs/list?profile_id=${pid}&share=${encodeURIComponent(share)}&path=${encodeURIComponent(path)}`);
     items.sort((a,b)=>(b.is_dir-a.is_dir)||a.name.localeCompare(b.name));
     const list=items.map(i=>{
       const np=(path.endsWith("/")?path:path+"/")+i.name;
-      if(i.is_dir)return `<li><span class="icon">📁</span><a class="n" href="#/p/${pid}${np}">${esc(i.name)}</a></li>`;
-      const dl=`/fs/download?profile_id=${pid}&path=${encodeURIComponent(np)}`;
+      if(i.is_dir)return `<li><span class="icon">📁</span><a class="n" href="${base}${np}">${esc(i.name)}</a></li>`;
+      const dl=`/fs/download?profile_id=${pid}&share=${encodeURIComponent(share)}&path=${encodeURIComponent(np)}`;
       return `<li><span class="icon">📄</span><a class="n" href="${dl}" download>${esc(i.name)}</a><span class="s">${fmt(i.size)}</span></li>`;
     }).join("");
     app.innerHTML=`<div class="crumbs">${crumbs.join(" / ")}</div>`+
